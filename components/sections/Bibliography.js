@@ -12,7 +12,6 @@ import {
   FiSave,
   FiPlus,
   FiTrash2,
-  FiEdit3,
 } from 'react-icons/fi';
 
 const BUCKET_META = [
@@ -28,7 +27,8 @@ const BUCKET_META = [
   {
     bucket: 2,
     title: 'Bucket 2',
-    subtitle: 'Background on the Key Stakeholder Group: Frontline Faculty and Diverse Learners',
+    subtitle:
+      'Background on the Key Stakeholder Group: Frontline Faculty and Diverse Learners',
     desc:
       'Research focused on experiences, needs, and characteristics of key stakeholders, including inclusive pedagogy and organizational culture’s impact.',
     border: 'border-l-emerald-500',
@@ -134,8 +134,6 @@ function defaultForm() {
     doi: '',
     url: '',
     zotero_item_url: '',
-    bucket_number: '',
-    sub_bucket: '',
     mega_macro_micro: '',
     color_code: '',
     authors: '',
@@ -156,13 +154,9 @@ function formToPayload(form) {
     doi: cleanText(form.doi) || null,
     url: cleanText(form.url) || null,
     zotero_item_url: cleanText(form.zotero_item_url) || null,
-    bucket_number: form.bucket_number === '' ? null : Number(form.bucket_number),
-    sub_bucket: cleanText(form.sub_bucket) || null,
     mega_macro_micro: cleanText(form.mega_macro_micro) || null,
     color_code: cleanText(form.color_code) || null,
-    // keep authors as string for simplicity (works with your existing authorsToString)
     authors: cleanText(form.authors) || null,
-    // store tags as array if you want; but your app supports both array + string.
     tags: normalizeTags(form.tags),
     citation_apa: safeText(form.citation_apa).trim() || null,
     annotation_full: safeText(form.annotation_full) || null,
@@ -170,32 +164,8 @@ function formToPayload(form) {
     updated_at: new Date().toISOString(),
   };
 
-  // If tags are empty, store null instead of []
   if (!payload.tags || payload.tags.length === 0) payload.tags = null;
-
   return payload;
-}
-
-// Convert DB row -> form state
-function rowToForm(row) {
-  return {
-    title: cleanText(row?.title) || deriveTitleFromCitation(row?.citation_apa) || '',
-    year: row?.year ?? '',
-    item_type: row?.item_type ?? '',
-    source: row?.source ?? '',
-    doi: row?.doi ?? '',
-    url: row?.url ?? '',
-    zotero_item_url: row?.zotero_item_url ?? '',
-    bucket_number: row?.bucket_number ?? '',
-    sub_bucket: row?.sub_bucket ?? '',
-    mega_macro_micro: row?.mega_macro_micro ?? '',
-    color_code: row?.color_code ?? '',
-    authors: authorsToString(row?.authors) || '',
-    tags: tagsToString(row?.tags) || '',
-    citation_apa: row?.citation_apa ?? '',
-    annotation_full: row?.annotation_full ?? '',
-    notes: row?.notes ?? '',
-  };
 }
 
 export default function Bibliography() {
@@ -219,10 +189,8 @@ export default function Bibliography() {
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState('');
 
-  // Modal CRUD
+  // Modal CRUD (Add only)
   const [modalOpen, setModalOpen] = useState(false);
-  const [modalMode, setModalMode] = useState('create'); // create | edit
-  const [modalId, setModalId] = useState(null);
   const [form, setForm] = useState(defaultForm());
   const [modalSaving, setModalSaving] = useState(false);
   const [modalMsg, setModalMsg] = useState('');
@@ -341,8 +309,8 @@ export default function Bibliography() {
         i.notes,
         i.doi,
         i.url,
-        i.sub_bucket,
         i.mega_macro_micro,
+        i.color_code,
         authorsToString(i.authors),
         ...(normalizeTags(i.tags) || []),
       ]
@@ -392,17 +360,7 @@ export default function Bibliography() {
   }
 
   function openCreateModal() {
-    setModalMode('create');
-    setModalId(null);
     setForm(defaultForm());
-    setModalMsg('');
-    setModalOpen(true);
-  }
-
-  function openEditModal(row) {
-    setModalMode('edit');
-    setModalId(row?.id ?? null);
-    setForm(rowToForm(row));
     setModalMsg('');
     setModalOpen(true);
   }
@@ -413,56 +371,25 @@ export default function Bibliography() {
       setModalMsg('');
 
       const payload = formToPayload(form);
+      const insertPayload = { ...payload, created_at: new Date().toISOString() };
 
-      if (modalMode === 'create') {
-        const insertPayload = {
-          ...payload,
-          created_at: new Date().toISOString(),
-        };
+      const { data, error } = await supabase
+        .from('bibliography_items')
+        .insert(insertPayload)
+        .select('*')
+        .single();
 
-        const { data, error } = await supabase
-          .from('bibliography_items')
-          .insert(insertPayload)
-          .select('*')
-          .single();
+      if (error) throw error;
 
-        if (error) throw error;
+      const normalized = {
+        ...data,
+        title: cleanText(data.title) || deriveTitleFromCitation(data.citation_apa) || '[Untitled]',
+        year: coerceYear(data.year),
+        tags: normalizeTags(data.tags),
+      };
 
-        const normalized = {
-          ...data,
-          title: cleanText(data.title) || deriveTitleFromCitation(data.citation_apa) || '[Untitled]',
-          year: coerceYear(data.year),
-          tags: normalizeTags(data.tags),
-        };
-
-        setItems(prev => [normalized, ...prev]);
-        setModalMsg('Created.');
-        setModalOpen(false);
-      } else {
-        if (!modalId) throw new Error('Missing item id for edit.');
-
-        const { data, error } = await supabase
-          .from('bibliography_items')
-          .update(payload)
-          .eq('id', modalId)
-          .select('*')
-          .single();
-
-        if (error) throw error;
-
-        const normalized = {
-          ...data,
-          title: cleanText(data.title) || deriveTitleFromCitation(data.citation_apa) || '[Untitled]',
-          year: coerceYear(data.year),
-          tags: normalizeTags(data.tags),
-        };
-
-        setItems(prev => prev.map(x => (x.id === modalId ? normalized : x)));
-        // If panel is open for this item, sync it too
-        setActive(prev => (prev?.id === modalId ? normalized : prev));
-        setModalMsg('Updated.');
-        setModalOpen(false);
-      }
+      setItems(prev => [normalized, ...prev]);
+      setModalOpen(false);
     } catch (e) {
       setModalMsg(e?.message || 'Save failed.');
     } finally {
@@ -477,11 +404,7 @@ export default function Bibliography() {
 
     try {
       setSaveMsg('');
-      const { error } = await supabase
-        .from('bibliography_items')
-        .delete()
-        .eq('id', row.id);
-
+      const { error } = await supabase.from('bibliography_items').delete().eq('id', row.id);
       if (error) throw error;
 
       setItems(prev => prev.filter(x => x.id !== row.id));
@@ -504,7 +427,6 @@ export default function Bibliography() {
       'url',
       'zotero_item_url',
       'bucket_number',
-      'sub_bucket',
       'mega_macro_micro',
       'color_code',
       'citation_apa',
@@ -514,10 +436,7 @@ export default function Bibliography() {
       'tags',
     ];
     const escape = v => `"${String(v ?? '').replaceAll('"', '""')}"`;
-    const lines = [
-      cols.join(','),
-      ...filtered.map(r => cols.map(c => escape(r[c])).join(',')),
-    ];
+    const lines = [cols.join(','), ...filtered.map(r => cols.map(c => escape(r[c])).join(','))];
     const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -746,7 +665,7 @@ export default function Bibliography() {
         </div>
       </div>
 
-      {/* Buckets */}
+      {/* Buckets (optional UI, not used per-item pills) */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
         {BUCKET_META.map(b => (
           <button
@@ -792,20 +711,20 @@ export default function Bibliography() {
             const snip = snippetFromText(row.annotation_full || row.notes);
 
             const cc = (row.color_code || '').toLowerCase();
-const border =
-  cc.includes('blue')
-    ? 'border-l-blue-500'
-    : cc.includes('green') || cc.includes('emerald')
-    ? 'border-l-emerald-500'
-    : cc.includes('purple')
-    ? 'border-l-purple-500'
-    : cc.includes('red')
-    ? 'border-l-red-500'
-    : cc.includes('orange')
-    ? 'border-l-orange-500'
-    : cc.includes('yellow')
-    ? 'border-l-yellow-500'
-    : 'border-l-slate-300';
+            const border =
+              cc.includes('blue')
+                ? 'border-l-blue-500'
+                : cc.includes('green') || cc.includes('emerald')
+                ? 'border-l-emerald-500'
+                : cc.includes('purple')
+                ? 'border-l-purple-500'
+                : cc.includes('red')
+                ? 'border-l-red-500'
+                : cc.includes('orange')
+                ? 'border-l-orange-500'
+                : cc.includes('yellow')
+                ? 'border-l-yellow-500'
+                : 'border-l-slate-300';
 
             return (
               <button
@@ -816,7 +735,6 @@ const border =
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-
                     <div className="font-semibold text-slate-900 text-lg leading-snug">{title}</div>
 
                     <div className="mt-1 text-sm text-slate-600 flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -858,6 +776,19 @@ const border =
                       </div>
                     ) : null}
                   </div>
+
+                  {/* Quick delete (no panel needed) */}
+                  <button
+                    type="button"
+                    onClick={e => {
+                      e.stopPropagation();
+                      deleteItem(row);
+                    }}
+                    className="shrink-0 inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm border border-red-200 text-red-700 hover:bg-red-50"
+                    title="Delete"
+                  >
+                    <FiTrash2 /> Delete
+                  </button>
                 </div>
               </button>
             );
@@ -877,8 +808,7 @@ const border =
                 <div className="text-sm text-slate-600 mt-1">
                   {active.year ? `${active.year}` : ''}
                   {active.item_type ? ` · ${active.item_type}` : ''}
-                  {active.bucket_number ? ` · Bucket ${active.bucket_number}` : ''}
-                  {active.sub_bucket ? ` · ${active.sub_bucket}` : ''}
+                  {active.color_code ? ` · ${active.color_code}` : ''}
                 </div>
 
                 <div className="mt-2 flex items-center gap-3 text-sm">
@@ -916,13 +846,6 @@ const border =
 
             <div className="p-4 space-y-4">
               <div className="flex items-center gap-2">
-                <button
-                  onClick={() => openEditModal(active)}
-                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm border border-slate-200 hover:bg-slate-50"
-                  type="button"
-                >
-                  <FiEdit3 /> Edit item
-                </button>
                 <button
                   onClick={() => deleteItem(active)}
                   className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm border border-red-200 text-red-700 hover:bg-red-50"
@@ -982,7 +905,7 @@ const border =
         </>
       )}
 
-      {/* Create/Edit Modal */}
+      {/* Add Modal */}
       {modalOpen && (
         <>
           <div className="fixed inset-0 bg-black/30 z-40" onClick={() => setModalOpen(false)} />
@@ -993,11 +916,9 @@ const border =
             >
               <div className="p-4 border-b border-slate-200 flex items-start justify-between gap-3">
                 <div>
-                  <div className="text-lg font-semibold text-slate-900">
-                    {modalMode === 'create' ? 'Add Article' : 'Edit Article'}
-                  </div>
+                  <div className="text-lg font-semibold text-slate-900">Add Article</div>
                   <div className="text-sm text-slate-600 mt-1">
-                    Fill what you have now — you can always edit later.
+                    Fill what you have now — you can always edit Notes/Annotation later.
                   </div>
                 </div>
                 <button
@@ -1082,22 +1003,6 @@ const border =
                   />
                 </Field>
 
-                <Field label="Bucket Number (1–3)">
-                  <Input
-                    value={form.bucket_number}
-                    onChange={e => setForm(f => ({ ...f, bucket_number: e.target.value }))}
-                    placeholder="1, 2, or 3"
-                  />
-                </Field>
-
-                <Field label="Sub-bucket">
-                  <Input
-                    value={form.sub_bucket}
-                    onChange={e => setForm(f => ({ ...f, sub_bucket: e.target.value }))}
-                    placeholder="e.g., Identity Suppression"
-                  />
-                </Field>
-
                 <Field label="Mega/Macro/Micro">
                   <Input
                     value={form.mega_macro_micro}
@@ -1110,7 +1015,7 @@ const border =
                   <Input
                     value={form.color_code}
                     onChange={e => setForm(f => ({ ...f, color_code: e.target.value }))}
-                    placeholder="Optional"
+                    placeholder="blue / green / purple / #hex"
                   />
                 </Field>
 
@@ -1149,9 +1054,7 @@ const border =
               </div>
 
               <div className="p-4 border-t border-slate-200 flex items-center justify-between gap-3">
-                <div className="text-xs text-slate-600">
-                  {modalMsg ? modalMsg : ' '}
-                </div>
+                <div className="text-xs text-slate-600">{modalMsg ? modalMsg : ' '}</div>
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => setModalOpen(false)}
