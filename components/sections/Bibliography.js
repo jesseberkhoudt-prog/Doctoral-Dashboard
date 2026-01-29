@@ -57,6 +57,16 @@ function safeText(x) {
   return (x ?? '').toString();
 }
 
+function cleanTitle(x) {
+  // kill NBSP, zero-width, bullet dots, repeated whitespace, trailing junk
+  return safeText(x)
+    .replace(/\u00A0/g, ' ')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/\u00B7/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function normalizeTags(tags) {
   if (!tags) return [];
   if (Array.isArray(tags)) return tags.map(t => String(t).trim()).filter(Boolean);
@@ -98,33 +108,41 @@ function coerceYear(v) {
 // More robust title derivation from APA-like citations.
 // Handles: (2019), (2019a), (2019/2017), (n.d.), etc.
 function deriveTitleFromCitation(citation) {
-  const c = safeText(citation).replace(/\s+/g, ' ').trim();
+  const c = cleanTitle(citation);
   if (!c) return '';
 
-  // Grab segment after the first ")."
   const idx = c.indexOf(').');
   if (idx === -1) return '';
 
-  let rest = c.slice(idx + 2).trim(); // after ")."
+  let rest = c.slice(idx + 2).trim();
   if (!rest) return '';
 
-  // Remove leading punctuation/spaces
   rest = rest.replace(/^[\s.]+/, '').trim();
 
-  // Practical extraction: stop before next "sentence-ish" start,
-  // otherwise fall back to first period chunk.
   const m =
     rest.match(/^(.+?)\.\s+[A-Z(]/) ||
     rest.match(/^(.+?)\.$/) ||
     rest.match(/^(.+?)\./);
 
-  let t = (m ? m[1] : rest).trim();
-
-  // Clean common trailing bracketed descriptors like [PDF], [Dataset], etc.
+  let t = cleanTitle(m ? m[1] : rest);
   t = t.replace(/\s*\[[^\]]+\]\s*$/g, '').trim();
 
   if (t.length < 2) return '';
   return t;
+}
+
+// Fetch a title from Crossref by DOI (works well for journal articles/books with DOIs)
+async function fetchTitleFromDOI(doi) {
+  const d = cleanTitle(doi).replace(/^https?:\/\/doi\.org\//i, '').replace(/^doi:\s*/i, '');
+  if (!d) return null;
+
+  const url = `https://api.crossref.org/works/${encodeURIComponent(d)}`;
+  const res = await fetch(url, { headers: { Accept: 'application/json' } });
+  if (!res.ok) return null;
+
+  const json = await res.json();
+  const t = json?.message?.title?.[0];
+  return t ? cleanTitle(t) : null;
 }
 
 export default function Bibliography() {
@@ -150,6 +168,10 @@ export default function Bibliography() {
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState('');
 
+  // backfill titles
+  const [fixingTitles, setFixingTitles] = useState(false);
+  const [fixTitleMsg, setFixTitleMsg] = useState('');
+
   async function loadItems() {
     try {
       setLoading(true);
@@ -163,9 +185,9 @@ export default function Bibliography() {
       if (error) throw error;
 
       const normalized = (data || []).map(r => {
-        const rawTitle = safeText(r.title).trim();
+        const rawTitle = cleanTitle(r.title);
         const derived = deriveTitleFromCitation(r.citation_apa);
-        const title = rawTitle || derived || '[Untitled]';
+        const title = rawTitle || derived || '';
 
         return {
           ...r,
@@ -211,11 +233,7 @@ export default function Bibliography() {
     items.forEach(i => {
       const s = authorsToString(i.authors);
       if (!s) return;
-      s
-        .split(',')
-        .map(x => x.trim())
-        .filter(Boolean)
-        .forEach(x => set.add(x));
+      s.split(',').map(x => x.trim()).filter(Boolean).forEach(x => set.add(x));
     });
     return ['All Authors', ...Array.from(set).sort((a, b) => a.localeCompare(b))];
   }, [items]);
@@ -238,6 +256,10 @@ export default function Bibliography() {
       if (map.has(b)) map.set(b, (map.get(b) || 0) + 1);
     });
     return map;
+  }, [items]);
+
+  const missingTitleCount = useMemo(() => {
+    return items.filter(i => !cleanTitle(i.title)).length;
   }, [items]);
 
   const filtered = useMemo(() => {
@@ -304,11 +326,13 @@ export default function Bibliography() {
         updated_at: new Date().toISOString(),
       };
 
-      const { error } = await supabase.from('bibliography_items').update(payload).eq('id', active.id);
+      const { error } = await supabase
+        .from('bibliography_items')
+        .update(payload)
+        .eq('id', active.id);
 
       if (error) throw error;
 
-      // Update local state immediately
       setItems(prev => prev.map(x => (x.id === active.id ? { ...x, ...payload } : x)));
       setActive(prev => (prev ? { ...prev, ...payload } : prev));
       setSaveMsg('Saved.');
@@ -316,6 +340,43 @@ export default function Bibliography() {
       setSaveMsg(`Save failed: ${e?.message || 'Unknown error'}`);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function fixMissingTitlesFromDOI() {
+    try {
+      setFixingTitles(true);
+      setFixTitleMsg('');
+
+      const candidates = items.filter(i => !cleanTitle(i.title) && cleanTitle(i.doi));
+      if (candidates.length === 0) {
+        setFixTitleMsg('No missing titles with DOI found.');
+        return;
+      }
+
+      let updated = 0;
+
+      // sequential to avoid rate-limits
+      for (const row of candidates) {
+        const newTitle = await fetchTitleFromDOI(row.doi);
+        if (!newTitle) continue;
+
+        const { error } = await supabase
+          .from('bibliography_items')
+          .update({ title: newTitle, updated_at: new Date().toISOString() })
+          .eq('id', row.id);
+
+        if (!error) {
+          updated += 1;
+          setItems(prev => prev.map(x => (x.id === row.id ? { ...x, title: newTitle } : x)));
+        }
+      }
+
+      setFixTitleMsg(updated ? `Fixed ${updated} titles from DOI.` : 'Could not fetch titles from DOI (Crossref).');
+    } catch (e) {
+      setFixTitleMsg(`Fix failed: ${e?.message || 'Unknown error'}`);
+    } finally {
+      setFixingTitles(false);
     }
   }
 
@@ -337,7 +398,10 @@ export default function Bibliography() {
       'notes',
     ];
     const escape = v => `"${String(v ?? '').replaceAll('"', '""')}"`;
-    const lines = [cols.join(','), ...filtered.map(r => cols.map(c => escape(r[c])).join(','))];
+    const lines = [
+      cols.join(','),
+      ...filtered.map(r => cols.map(c => escape(r[c])).join(',')),
+    ];
     const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -351,8 +415,8 @@ export default function Bibliography() {
       .map((r, idx) => {
         const key = `ref${idx + 1}`;
         const y = r.year || '';
-        const t = (r.title || r.citation_apa || '[Untitled]').replaceAll('{', '').replaceAll('}', '');
-        const s = (r.source || '').replaceAll('{', '').replaceAll('}', '');
+        const t = (cleanTitle(r.title) || cleanTitle(r.citation_apa) || '[Untitled]').replaceAll('{', '').replaceAll('}', '');
+        const s = cleanTitle(r.source || '').replaceAll('{', '').replaceAll('}', '');
         return `@misc{${key},\n  title={${t}},\n  year={${y}},\n  howpublished={${s}},\n  note={${doiToUrl(r.doi) || r.url || ''}}\n}\n`;
       })
       .join('\n');
@@ -366,10 +430,8 @@ export default function Bibliography() {
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-8">
-      {/* DEBUG */}
       <div className="mb-3 text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
-        <span className="font-semibold">DEBUG:</span> loading={String(loading)} | err={err ? err : 'none'} | rows=
-        {items.length} | filtered={filtered.length}
+        <span className="font-semibold">DEBUG:</span> loading={String(loading)} | err={err ? err : 'none'} | rows={items.length} | filtered={filtered.length} | missingTitles={missingTitleCount}
       </div>
 
       <div className="text-center mb-6">
@@ -381,7 +443,7 @@ export default function Bibliography() {
 
       {/* Toolbar */}
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm px-4 py-3 mb-4 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center flex-wrap gap-2">
           <button
             onClick={exportBibTexPlaceholder}
             className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700"
@@ -403,6 +465,22 @@ export default function Bibliography() {
           >
             <FiPrinter /> Print
           </button>
+
+          <button
+            onClick={fixMissingTitlesFromDOI}
+            disabled={fixingTitles}
+            className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm border ${
+              fixingTitles
+                ? 'bg-slate-100 text-slate-400 border-slate-200'
+                : 'bg-white text-slate-900 border-slate-200 hover:bg-slate-50'
+            }`}
+            type="button"
+            title="Fetch titles from Crossref for rows missing title but having DOI"
+          >
+            {fixingTitles ? 'Fixing…' : `Fix Missing Titles (DOI)`}
+          </button>
+
+          {fixTitleMsg ? <span className="text-xs text-slate-600 ml-1">{fixTitleMsg}</span> : null}
         </div>
 
         <div className="flex items-center gap-2">
@@ -450,12 +528,12 @@ export default function Bibliography() {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-end">
           <div className="lg:col-span-7">
             <label className="text-xs font-semibold text-slate-600 flex items-center gap-2">
-              <FiSearch className="text-slate-500" /> Advanced Search
+              <FiSearch className="text-slate-500" /> Search
             </label>
             <input
               value={query}
               onChange={e => setQuery(e.target.value)}
-              placeholder="Use AND, OR, NOT for advanced search…"
+              placeholder="Search title, author, tags, notes, citation…"
               className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
             />
           </div>
@@ -570,9 +648,7 @@ export default function Bibliography() {
           <button
             key={b.bucket}
             onClick={() =>
-              setCategoryTab(
-                b.bucket === 1 ? 'Student Success' : b.bucket === 2 ? 'Stakeholders' : 'Interventions'
-              )
+              setCategoryTab(b.bucket === 1 ? 'Student Success' : b.bucket === 2 ? 'Stakeholders' : 'Interventions')
             }
             className={`text-left bg-white border border-slate-200 rounded-xl shadow-sm p-4 hover:bg-slate-50 transition border-l-4 ${b.border}`}
             type="button"
@@ -589,7 +665,6 @@ export default function Bibliography() {
         ))}
       </div>
 
-      {/* List */}
       <div className="text-sm text-slate-600 mb-3">
         Showing <span className="font-semibold text-slate-900">{filtered.length}</span> of{' '}
         <span className="font-semibold text-slate-900">{items.length}</span> documents
@@ -605,7 +680,7 @@ export default function Bibliography() {
         {!loading &&
           !err &&
           filtered.map(row => {
-            const title = row.title || deriveTitleFromCitation(row.citation_apa) || '[Untitled]';
+            const title = cleanTitle(row.title) || deriveTitleFromCitation(row.citation_apa) || '[Untitled]';
             const doiUrl = doiToUrl(row.doi);
             const zotero = row.zotero_item_url;
             const authorText = authorsToString(row.authors);
@@ -630,24 +705,6 @@ export default function Bibliography() {
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2 mb-2">
-                      {row.sub_bucket ? (
-                        <span className="text-[11px] px-2 py-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
-                          {row.sub_bucket}
-                        </span>
-                      ) : row.bucket_number ? (
-                        <span className="text-[11px] px-2 py-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
-                          Bucket {row.bucket_number}
-                        </span>
-                      ) : null}
-
-                      {row.item_type ? (
-                        <span className="text-[11px] px-2 py-1 rounded-full bg-slate-50 text-slate-600 border border-slate-200">
-                          {row.item_type}
-                        </span>
-                      ) : null}
-                    </div>
-
                     <div className="font-semibold text-slate-900 text-lg leading-snug">{title}</div>
 
                     <div className="mt-1 text-sm text-slate-600 flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -706,7 +763,7 @@ export default function Bibliography() {
             <div className="p-4 border-b border-slate-200 flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-lg font-semibold text-slate-900">
-                  {active.title || deriveTitleFromCitation(active.citation_apa) || '[Untitled]'}
+                  {cleanTitle(active.title) || deriveTitleFromCitation(active.citation_apa) || '[Untitled]'}
                 </div>
                 <div className="text-sm text-slate-600 mt-1">
                   {active.year ? `${active.year}` : ''}
@@ -784,7 +841,9 @@ export default function Bibliography() {
 
               <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
                 <div className="text-xs font-semibold text-slate-600 mb-2">APA Citation</div>
-                <div className="text-sm text-slate-800 whitespace-pre-wrap">{active.citation_apa || '—'}</div>
+                <div className="text-sm text-slate-800 whitespace-pre-wrap">
+                  {active.citation_apa || '—'}
+                </div>
               </div>
             </div>
           </div>
