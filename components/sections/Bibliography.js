@@ -95,16 +95,35 @@ function coerceYear(v) {
   return Number.isFinite(n) ? n : null;
 }
 
-// Derive a usable title if title is missing.
-// Tries to pull the segment after the year in APA citation: "Author. (2015). Title. Source."
+// More robust title derivation from APA-like citations.
+// Handles: (2019), (2019a), (2019/2017), (n.d.), etc.
 function deriveTitleFromCitation(citation) {
   const c = safeText(citation).replace(/\s+/g, ' ').trim();
   if (!c) return '';
-  const m = c.match(/\(\d{4}\)\.\s*(.+?)(?:\.\s|$)/);
-  if (!m) return '';
-  let t = m[1].trim();
-  // clean weird trailing bits
+
+  // Grab segment after the first ")."
+  const idx = c.indexOf(').');
+  if (idx === -1) return '';
+
+  let rest = c.slice(idx + 2).trim(); // after ")."
+  if (!rest) return '';
+
+  // Remove leading punctuation/spaces
+  rest = rest.replace(/^[\s.]+/, '').trim();
+
+  // Practical extraction: stop before next "sentence-ish" start,
+  // otherwise fall back to first period chunk.
+  const m =
+    rest.match(/^(.+?)\.\s+[A-Z(]/) ||
+    rest.match(/^(.+?)\.$/) ||
+    rest.match(/^(.+?)\./);
+
+  let t = (m ? m[1] : rest).trim();
+
+  // Clean common trailing bracketed descriptors like [PDF], [Dataset], etc.
   t = t.replace(/\s*\[[^\]]+\]\s*$/g, '').trim();
+
+  if (t.length < 2) return '';
   return t;
 }
 
@@ -144,7 +163,10 @@ export default function Bibliography() {
       if (error) throw error;
 
       const normalized = (data || []).map(r => {
-        const title = safeText(r.title).trim() || deriveTitleFromCitation(r.citation_apa) || '[Untitled]';
+        const rawTitle = safeText(r.title).trim();
+        const derived = deriveTitleFromCitation(r.citation_apa);
+        const title = rawTitle || derived || '[Untitled]';
+
         return {
           ...r,
           title,
@@ -189,7 +211,11 @@ export default function Bibliography() {
     items.forEach(i => {
       const s = authorsToString(i.authors);
       if (!s) return;
-      s.split(',').map(x => x.trim()).filter(Boolean).forEach(x => set.add(x));
+      s
+        .split(',')
+        .map(x => x.trim())
+        .filter(Boolean)
+        .forEach(x => set.add(x));
     });
     return ['All Authors', ...Array.from(set).sort((a, b) => a.localeCompare(b))];
   }, [items]);
@@ -278,17 +304,12 @@ export default function Bibliography() {
         updated_at: new Date().toISOString(),
       };
 
-      const { error } = await supabase
-        .from('bibliography_items')
-        .update(payload)
-        .eq('id', active.id);
+      const { error } = await supabase.from('bibliography_items').update(payload).eq('id', active.id);
 
       if (error) throw error;
 
       // Update local state immediately
-      setItems(prev =>
-        prev.map(x => (x.id === active.id ? { ...x, ...payload } : x))
-      );
+      setItems(prev => prev.map(x => (x.id === active.id ? { ...x, ...payload } : x)));
       setActive(prev => (prev ? { ...prev, ...payload } : prev));
       setSaveMsg('Saved.');
     } catch (e) {
@@ -316,10 +337,7 @@ export default function Bibliography() {
       'notes',
     ];
     const escape = v => `"${String(v ?? '').replaceAll('"', '""')}"`;
-    const lines = [
-      cols.join(','),
-      ...filtered.map(r => cols.map(c => escape(r[c])).join(',')),
-    ];
+    const lines = [cols.join(','), ...filtered.map(r => cols.map(c => escape(r[c])).join(','))];
     const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -350,7 +368,8 @@ export default function Bibliography() {
     <div className="max-w-6xl mx-auto px-4 py-8">
       {/* DEBUG */}
       <div className="mb-3 text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
-        <span className="font-semibold">DEBUG:</span> loading={String(loading)} | err={err ? err : 'none'} | rows={items.length} | filtered={filtered.length}
+        <span className="font-semibold">DEBUG:</span> loading={String(loading)} | err={err ? err : 'none'} | rows=
+        {items.length} | filtered={filtered.length}
       </div>
 
       <div className="text-center mb-6">
@@ -551,7 +570,9 @@ export default function Bibliography() {
           <button
             key={b.bucket}
             onClick={() =>
-              setCategoryTab(b.bucket === 1 ? 'Student Success' : b.bucket === 2 ? 'Stakeholders' : 'Interventions')
+              setCategoryTab(
+                b.bucket === 1 ? 'Student Success' : b.bucket === 2 ? 'Stakeholders' : 'Interventions'
+              )
             }
             className={`text-left bg-white border border-slate-200 rounded-xl shadow-sm p-4 hover:bg-slate-50 transition border-l-4 ${b.border}`}
             type="button"
@@ -678,7 +699,10 @@ export default function Bibliography() {
       {panelOpen && active && (
         <>
           <div className="fixed inset-0 bg-black/30 z-40" onClick={() => setPanelOpen(false)} />
-          <div className="fixed right-0 top-0 h-full w-full sm:w-[720px] bg-white z-50 border-l border-slate-200 shadow-2xl overflow-auto">
+          <div
+            className="fixed right-0 top-0 h-full w-full sm:w-[720px] bg-white z-50 border-l border-slate-200 shadow-2xl overflow-auto"
+            onClick={e => e.stopPropagation()}
+          >
             <div className="p-4 border-b border-slate-200 flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-lg font-semibold text-slate-900">
@@ -760,9 +784,7 @@ export default function Bibliography() {
 
               <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
                 <div className="text-xs font-semibold text-slate-600 mb-2">APA Citation</div>
-                <div className="text-sm text-slate-800 whitespace-pre-wrap">
-                  {active.citation_apa || '—'}
-                </div>
+                <div className="text-sm text-slate-800 whitespace-pre-wrap">{active.citation_apa || '—'}</div>
               </div>
             </div>
           </div>
