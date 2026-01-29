@@ -9,10 +9,10 @@ import {
   FiExternalLink,
   FiX,
   FiChevronDown,
-  FiGrid,
-  FiList,
-  FiColumns,
   FiSave,
+  FiPlus,
+  FiTrash2,
+  FiEdit3,
 } from 'react-icons/fi';
 
 const BUCKET_META = [
@@ -57,12 +57,10 @@ function safeText(x) {
   return (x ?? '').toString();
 }
 
-function cleanTitle(x) {
-  // kill NBSP, zero-width, bullet dots, repeated whitespace, trailing junk
+function cleanText(x) {
   return safeText(x)
     .replace(/\u00A0/g, ' ')
     .replace(/[\u200B-\u200D\uFEFF]/g, '')
-    .replace(/\u00B7/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -74,6 +72,11 @@ function normalizeTags(tags) {
     .split(',')
     .map(t => t.trim())
     .filter(Boolean);
+}
+
+function tagsToString(tags) {
+  const arr = normalizeTags(tags);
+  return arr.join(', ');
 }
 
 function authorsToString(authors) {
@@ -89,11 +92,7 @@ function authorsToString(authors) {
 }
 
 function snippetFromText(text) {
-  const a = safeText(text)
-    .replace(/\u00B7/g, '')
-    .replace(/[—]{2,}/g, '—')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const a = cleanText(text);
   if (!a) return '';
   return a.length > 320 ? a.slice(0, 320).trim() + '…' : a;
 }
@@ -105,18 +104,15 @@ function coerceYear(v) {
   return Number.isFinite(n) ? n : null;
 }
 
-// More robust title derivation from APA-like citations.
-// Handles: (2019), (2019a), (2019/2017), (n.d.), etc.
+// Derive a usable title if title is missing.
+// Tries to pull the segment after the year-ish part in APA citation: "Author. (2015). Title. Source."
 function deriveTitleFromCitation(citation) {
-  const c = cleanTitle(citation);
+  const c = cleanText(citation);
   if (!c) return '';
-
   const idx = c.indexOf(').');
   if (idx === -1) return '';
-
   let rest = c.slice(idx + 2).trim();
   if (!rest) return '';
-
   rest = rest.replace(/^[\s.]+/, '').trim();
 
   const m =
@@ -124,25 +120,82 @@ function deriveTitleFromCitation(citation) {
     rest.match(/^(.+?)\.$/) ||
     rest.match(/^(.+?)\./);
 
-  let t = cleanTitle(m ? m[1] : rest);
+  let t = cleanText(m ? m[1] : rest);
   t = t.replace(/\s*\[[^\]]+\]\s*$/g, '').trim();
-
-  if (t.length < 2) return '';
   return t;
 }
 
-// Fetch a title from Crossref by DOI (works well for journal articles/books with DOIs)
-async function fetchTitleFromDOI(doi) {
-  const d = cleanTitle(doi).replace(/^https?:\/\/doi\.org\//i, '').replace(/^doi:\s*/i, '');
-  if (!d) return null;
+function defaultForm() {
+  return {
+    title: '',
+    year: '',
+    item_type: '',
+    source: '',
+    doi: '',
+    url: '',
+    zotero_item_url: '',
+    bucket_number: '',
+    sub_bucket: '',
+    mega_macro_micro: '',
+    color_code: '',
+    authors: '',
+    tags: '',
+    citation_apa: '',
+    annotation_full: '',
+    notes: '',
+  };
+}
 
-  const url = `https://api.crossref.org/works/${encodeURIComponent(d)}`;
-  const res = await fetch(url, { headers: { Accept: 'application/json' } });
-  if (!res.ok) return null;
+// Convert form state -> DB payload
+function formToPayload(form) {
+  const payload = {
+    title: cleanText(form.title) || null,
+    year: form.year === '' ? null : coerceYear(form.year),
+    item_type: cleanText(form.item_type) || null,
+    source: cleanText(form.source) || null,
+    doi: cleanText(form.doi) || null,
+    url: cleanText(form.url) || null,
+    zotero_item_url: cleanText(form.zotero_item_url) || null,
+    bucket_number: form.bucket_number === '' ? null : Number(form.bucket_number),
+    sub_bucket: cleanText(form.sub_bucket) || null,
+    mega_macro_micro: cleanText(form.mega_macro_micro) || null,
+    color_code: cleanText(form.color_code) || null,
+    // keep authors as string for simplicity (works with your existing authorsToString)
+    authors: cleanText(form.authors) || null,
+    // store tags as array if you want; but your app supports both array + string.
+    tags: normalizeTags(form.tags),
+    citation_apa: safeText(form.citation_apa).trim() || null,
+    annotation_full: safeText(form.annotation_full) || null,
+    notes: safeText(form.notes) || null,
+    updated_at: new Date().toISOString(),
+  };
 
-  const json = await res.json();
-  const t = json?.message?.title?.[0];
-  return t ? cleanTitle(t) : null;
+  // If tags are empty, store null instead of []
+  if (!payload.tags || payload.tags.length === 0) payload.tags = null;
+
+  return payload;
+}
+
+// Convert DB row -> form state
+function rowToForm(row) {
+  return {
+    title: cleanText(row?.title) || deriveTitleFromCitation(row?.citation_apa) || '',
+    year: row?.year ?? '',
+    item_type: row?.item_type ?? '',
+    source: row?.source ?? '',
+    doi: row?.doi ?? '',
+    url: row?.url ?? '',
+    zotero_item_url: row?.zotero_item_url ?? '',
+    bucket_number: row?.bucket_number ?? '',
+    sub_bucket: row?.sub_bucket ?? '',
+    mega_macro_micro: row?.mega_macro_micro ?? '',
+    color_code: row?.color_code ?? '',
+    authors: authorsToString(row?.authors) || '',
+    tags: tagsToString(row?.tags) || '',
+    citation_apa: row?.citation_apa ?? '',
+    annotation_full: row?.annotation_full ?? '',
+    notes: row?.notes ?? '',
+  };
 }
 
 export default function Bibliography() {
@@ -157,20 +210,22 @@ export default function Bibliography() {
   const [selectedTags, setSelectedTags] = useState([]);
   const [categoryTab, setCategoryTab] = useState('All Categories');
 
-  const [viewMode, setViewMode] = useState('list');
-
   const [panelOpen, setPanelOpen] = useState(false);
   const [active, setActive] = useState(null);
 
-  // editable fields in panel
+  // Panel editable fields (notes/annotation only in-panel)
   const [editNotes, setEditNotes] = useState('');
   const [editAnnotation, setEditAnnotation] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState('');
 
-  // backfill titles
-  const [fixingTitles, setFixingTitles] = useState(false);
-  const [fixTitleMsg, setFixTitleMsg] = useState('');
+  // Modal CRUD
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalMode, setModalMode] = useState('create'); // create | edit
+  const [modalId, setModalId] = useState(null);
+  const [form, setForm] = useState(defaultForm());
+  const [modalSaving, setModalSaving] = useState(false);
+  const [modalMsg, setModalMsg] = useState('');
 
   async function loadItems() {
     try {
@@ -185,10 +240,7 @@ export default function Bibliography() {
       if (error) throw error;
 
       const normalized = (data || []).map(r => {
-        const rawTitle = cleanTitle(r.title);
-        const derived = deriveTitleFromCitation(r.citation_apa);
-        const title = rawTitle || derived || '';
-
+        const title = cleanText(r.title) || deriveTitleFromCitation(r.citation_apa) || '[Untitled]';
         return {
           ...r,
           title,
@@ -256,10 +308,6 @@ export default function Bibliography() {
       if (map.has(b)) map.set(b, (map.get(b) || 0) + 1);
     });
     return map;
-  }, [items]);
-
-  const missingTitleCount = useMemo(() => {
-    return items.filter(i => !cleanTitle(i.title)).length;
   }, [items]);
 
   const filtered = useMemo(() => {
@@ -343,40 +391,106 @@ export default function Bibliography() {
     }
   }
 
-  async function fixMissingTitlesFromDOI() {
+  function openCreateModal() {
+    setModalMode('create');
+    setModalId(null);
+    setForm(defaultForm());
+    setModalMsg('');
+    setModalOpen(true);
+  }
+
+  function openEditModal(row) {
+    setModalMode('edit');
+    setModalId(row?.id ?? null);
+    setForm(rowToForm(row));
+    setModalMsg('');
+    setModalOpen(true);
+  }
+
+  async function saveModal() {
     try {
-      setFixingTitles(true);
-      setFixTitleMsg('');
+      setModalSaving(true);
+      setModalMsg('');
 
-      const candidates = items.filter(i => !cleanTitle(i.title) && cleanTitle(i.doi));
-      if (candidates.length === 0) {
-        setFixTitleMsg('No missing titles with DOI found.');
-        return;
-      }
+      const payload = formToPayload(form);
 
-      let updated = 0;
+      if (modalMode === 'create') {
+        const insertPayload = {
+          ...payload,
+          created_at: new Date().toISOString(),
+        };
 
-      // sequential to avoid rate-limits
-      for (const row of candidates) {
-        const newTitle = await fetchTitleFromDOI(row.doi);
-        if (!newTitle) continue;
-
-        const { error } = await supabase
+        const { data, error } = await supabase
           .from('bibliography_items')
-          .update({ title: newTitle, updated_at: new Date().toISOString() })
-          .eq('id', row.id);
+          .insert(insertPayload)
+          .select('*')
+          .single();
 
-        if (!error) {
-          updated += 1;
-          setItems(prev => prev.map(x => (x.id === row.id ? { ...x, title: newTitle } : x)));
-        }
+        if (error) throw error;
+
+        const normalized = {
+          ...data,
+          title: cleanText(data.title) || deriveTitleFromCitation(data.citation_apa) || '[Untitled]',
+          year: coerceYear(data.year),
+          tags: normalizeTags(data.tags),
+        };
+
+        setItems(prev => [normalized, ...prev]);
+        setModalMsg('Created.');
+        setModalOpen(false);
+      } else {
+        if (!modalId) throw new Error('Missing item id for edit.');
+
+        const { data, error } = await supabase
+          .from('bibliography_items')
+          .update(payload)
+          .eq('id', modalId)
+          .select('*')
+          .single();
+
+        if (error) throw error;
+
+        const normalized = {
+          ...data,
+          title: cleanText(data.title) || deriveTitleFromCitation(data.citation_apa) || '[Untitled]',
+          year: coerceYear(data.year),
+          tags: normalizeTags(data.tags),
+        };
+
+        setItems(prev => prev.map(x => (x.id === modalId ? normalized : x)));
+        // If panel is open for this item, sync it too
+        setActive(prev => (prev?.id === modalId ? normalized : prev));
+        setModalMsg('Updated.');
+        setModalOpen(false);
       }
-
-      setFixTitleMsg(updated ? `Fixed ${updated} titles from DOI.` : 'Could not fetch titles from DOI (Crossref).');
     } catch (e) {
-      setFixTitleMsg(`Fix failed: ${e?.message || 'Unknown error'}`);
+      setModalMsg(e?.message || 'Save failed.');
     } finally {
-      setFixingTitles(false);
+      setModalSaving(false);
+    }
+  }
+
+  async function deleteItem(row) {
+    if (!row?.id) return;
+    const ok = window.confirm('Delete this item permanently?');
+    if (!ok) return;
+
+    try {
+      setSaveMsg('');
+      const { error } = await supabase
+        .from('bibliography_items')
+        .delete()
+        .eq('id', row.id);
+
+      if (error) throw error;
+
+      setItems(prev => prev.filter(x => x.id !== row.id));
+      if (active?.id === row.id) {
+        setPanelOpen(false);
+        setActive(null);
+      }
+    } catch (e) {
+      setSaveMsg(`Delete failed: ${e?.message || 'Unknown error'}`);
     }
   }
 
@@ -396,6 +510,8 @@ export default function Bibliography() {
       'citation_apa',
       'annotation_full',
       'notes',
+      'authors',
+      'tags',
     ];
     const escape = v => `"${String(v ?? '').replaceAll('"', '""')}"`;
     const lines = [
@@ -415,8 +531,8 @@ export default function Bibliography() {
       .map((r, idx) => {
         const key = `ref${idx + 1}`;
         const y = r.year || '';
-        const t = (cleanTitle(r.title) || cleanTitle(r.citation_apa) || '[Untitled]').replaceAll('{', '').replaceAll('}', '');
-        const s = cleanTitle(r.source || '').replaceAll('{', '').replaceAll('}', '');
+        const t = (r.title || r.citation_apa || '[Untitled]').replaceAll('{', '').replaceAll('}', '');
+        const s = (r.source || '').replaceAll('{', '').replaceAll('}', '');
         return `@misc{${key},\n  title={${t}},\n  year={${y}},\n  howpublished={${s}},\n  note={${doiToUrl(r.doi) || r.url || ''}}\n}\n`;
       })
       .join('\n');
@@ -428,8 +544,35 @@ export default function Bibliography() {
     URL.revokeObjectURL(a.href);
   }
 
-  return (
+  const Field = ({ label, children }) => (
+    <div className="space-y-1">
+      <div className="text-xs font-semibold text-slate-600">{label}</div>
+      {children}
+    </div>
+  );
 
+  const Input = props => (
+    <input
+      {...props}
+      className={[
+        'w-full border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200',
+        props.className || '',
+      ].join(' ')}
+    />
+  );
+
+  const TextArea = props => (
+    <textarea
+      {...props}
+      className={[
+        'w-full border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200',
+        props.className || '',
+      ].join(' ')}
+    />
+  );
+
+  return (
+    <div className="max-w-6xl mx-auto px-4 py-8">
       <div className="text-center mb-6">
         <h1 className="text-3xl font-bold text-slate-900">Annotated Bibliography</h1>
         <p className="text-slate-600 text-sm mt-1">
@@ -440,6 +583,14 @@ export default function Bibliography() {
       {/* Toolbar */}
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm px-4 py-3 mb-4 flex items-center justify-between gap-3">
         <div className="flex items-center flex-wrap gap-2">
+          <button
+            onClick={openCreateModal}
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-900 text-white text-sm hover:bg-slate-800"
+            type="button"
+          >
+            <FiPlus /> Add Article
+          </button>
+
           <button
             onClick={exportBibTexPlaceholder}
             className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700"
@@ -463,59 +614,16 @@ export default function Bibliography() {
           </button>
 
           <button
-            onClick={fixMissingTitlesFromDOI}
-            disabled={fixingTitles}
-            className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm border ${
-              fixingTitles
-                ? 'bg-slate-100 text-slate-400 border-slate-200'
-                : 'bg-white text-slate-900 border-slate-200 hover:bg-slate-50'
-            }`}
+            onClick={loadItems}
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white text-slate-900 text-sm border border-slate-200 hover:bg-slate-50"
             type="button"
-            title="Fetch titles from Crossref for rows missing title but having DOI"
           >
-            {fixingTitles ? 'Fixing…' : `Fix Missing Titles (DOI)`}
+            Refresh
           </button>
-
-          {fixTitleMsg ? <span className="text-xs text-slate-600 ml-1">{fixTitleMsg}</span> : null}
         </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setViewMode('list')}
-            className={`p-2 rounded-lg border ${
-              viewMode === 'list'
-                ? 'bg-slate-900 text-white border-slate-900'
-                : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700'
-            }`}
-            type="button"
-            title="List"
-          >
-            <FiList />
-          </button>
-          <button
-            onClick={() => setViewMode('compact')}
-            className={`p-2 rounded-lg border ${
-              viewMode === 'compact'
-                ? 'bg-slate-900 text-white border-slate-900'
-                : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700'
-            }`}
-            type="button"
-            title="Compact"
-          >
-            <FiColumns />
-          </button>
-          <button
-            onClick={() => setViewMode('grid')}
-            className={`p-2 rounded-lg border ${
-              viewMode === 'grid'
-                ? 'bg-slate-900 text-white border-slate-900'
-                : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700'
-            }`}
-            type="button"
-            title="Grid"
-          >
-            <FiGrid />
-          </button>
+        <div className="text-xs text-slate-500">
+          {loading ? 'Loading…' : err ? `Error: ${err}` : `${items.length} items`}
         </div>
       </div>
 
@@ -524,7 +632,7 @@ export default function Bibliography() {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-end">
           <div className="lg:col-span-7">
             <label className="text-xs font-semibold text-slate-600 flex items-center gap-2">
-              <FiSearch className="text-slate-500" /> Search
+              <FiSearch className="text-slate-500" /> Advanced Search
             </label>
             <input
               value={query}
@@ -661,6 +769,7 @@ export default function Bibliography() {
         ))}
       </div>
 
+      {/* List */}
       <div className="text-sm text-slate-600 mb-3">
         Showing <span className="font-semibold text-slate-900">{filtered.length}</span> of{' '}
         <span className="font-semibold text-slate-900">{items.length}</span> documents
@@ -676,7 +785,7 @@ export default function Bibliography() {
         {!loading &&
           !err &&
           filtered.map(row => {
-            const title = cleanTitle(row.title) || deriveTitleFromCitation(row.citation_apa) || '[Untitled]';
+            const title = row.title || deriveTitleFromCitation(row.citation_apa) || '[Untitled]';
             const doiUrl = doiToUrl(row.doi);
             const zotero = row.zotero_item_url;
             const authorText = authorsToString(row.authors);
@@ -701,6 +810,24 @@ export default function Bibliography() {
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2 mb-2">
+                      {row.sub_bucket ? (
+                        <span className="text-[11px] px-2 py-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
+                          {row.sub_bucket}
+                        </span>
+                      ) : row.bucket_number ? (
+                        <span className="text-[11px] px-2 py-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
+                          Bucket {row.bucket_number}
+                        </span>
+                      ) : null}
+
+                      {row.item_type ? (
+                        <span className="text-[11px] px-2 py-1 rounded-full bg-slate-50 text-slate-600 border border-slate-200">
+                          {row.item_type}
+                        </span>
+                      ) : null}
+                    </div>
+
                     <div className="font-semibold text-slate-900 text-lg leading-snug">{title}</div>
 
                     <div className="mt-1 text-sm text-slate-600 flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -748,18 +875,15 @@ export default function Bibliography() {
           })}
       </div>
 
-      {/* Side panel with editable fields */}
+      {/* Side panel */}
       {panelOpen && active && (
         <>
           <div className="fixed inset-0 bg-black/30 z-40" onClick={() => setPanelOpen(false)} />
-          <div
-            className="fixed right-0 top-0 h-full w-full sm:w-[720px] bg-white z-50 border-l border-slate-200 shadow-2xl overflow-auto"
-            onClick={e => e.stopPropagation()}
-          >
+          <div className="fixed right-0 top-0 h-full w-full sm:w-[720px] bg-white z-50 border-l border-slate-200 shadow-2xl overflow-auto">
             <div className="p-4 border-b border-slate-200 flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-lg font-semibold text-slate-900">
-                  {cleanTitle(active.title) || deriveTitleFromCitation(active.citation_apa) || '[Untitled]'}
+                  {active.title || deriveTitleFromCitation(active.citation_apa) || '[Untitled]'}
                 </div>
                 <div className="text-sm text-slate-600 mt-1">
                   {active.year ? `${active.year}` : ''}
@@ -802,6 +926,23 @@ export default function Bibliography() {
             </div>
 
             <div className="p-4 space-y-4">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => openEditModal(active)}
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm border border-slate-200 hover:bg-slate-50"
+                  type="button"
+                >
+                  <FiEdit3 /> Edit item
+                </button>
+                <button
+                  onClick={() => deleteItem(active)}
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm border border-red-200 text-red-700 hover:bg-red-50"
+                  type="button"
+                >
+                  <FiTrash2 /> Delete
+                </button>
+              </div>
+
               <div className="bg-white border border-slate-200 rounded-xl p-4">
                 <div className="flex items-center justify-between gap-3 mb-2">
                   <div className="text-xs font-semibold text-slate-600">Full Annotation (editable)</div>
@@ -839,6 +980,209 @@ export default function Bibliography() {
                 <div className="text-xs font-semibold text-slate-600 mb-2">APA Citation</div>
                 <div className="text-sm text-slate-800 whitespace-pre-wrap">
                   {active.citation_apa || '—'}
+                </div>
+              </div>
+
+              {saveMsg && saveMsg.startsWith('Delete failed') ? (
+                <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                  {saveMsg}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Create/Edit Modal */}
+      {modalOpen && (
+        <>
+          <div className="fixed inset-0 bg-black/30 z-40" onClick={() => setModalOpen(false)} />
+          <div className="fixed inset-0 z-50 flex items-start justify-center p-4 overflow-auto">
+            <div
+              className="w-full max-w-3xl bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-hidden"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="p-4 border-b border-slate-200 flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-lg font-semibold text-slate-900">
+                    {modalMode === 'create' ? 'Add Article' : 'Edit Article'}
+                  </div>
+                  <div className="text-sm text-slate-600 mt-1">
+                    Fill what you have now — you can always edit later.
+                  </div>
+                </div>
+                <button
+                  onClick={() => setModalOpen(false)}
+                  className="p-2 rounded-lg border border-slate-200 hover:bg-slate-50"
+                  type="button"
+                >
+                  <FiX />
+                </button>
+              </div>
+
+              <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                <Field label="Title">
+                  <Input
+                    value={form.title}
+                    onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
+                    placeholder="Article / book / report title"
+                  />
+                </Field>
+
+                <Field label="Year">
+                  <Input
+                    value={form.year}
+                    onChange={e => setForm(f => ({ ...f, year: e.target.value }))}
+                    placeholder="e.g., 2024"
+                  />
+                </Field>
+
+                <Field label="Type">
+                  <Input
+                    value={form.item_type}
+                    onChange={e => setForm(f => ({ ...f, item_type: e.target.value }))}
+                    placeholder="Journal article / report / book / policy…"
+                  />
+                </Field>
+
+                <Field label="Source / Journal / Publisher">
+                  <Input
+                    value={form.source}
+                    onChange={e => setForm(f => ({ ...f, source: e.target.value }))}
+                    placeholder="e.g., Review of Educational Research"
+                  />
+                </Field>
+
+                <Field label="Authors (comma-separated)">
+                  <Input
+                    value={form.authors}
+                    onChange={e => setForm(f => ({ ...f, authors: e.target.value }))}
+                    placeholder="Last, F., Last, F."
+                  />
+                </Field>
+
+                <Field label="Tags (comma-separated)">
+                  <Input
+                    value={form.tags}
+                    onChange={e => setForm(f => ({ ...f, tags: e.target.value }))}
+                    placeholder="neurodiversity, inclusion, systems"
+                  />
+                </Field>
+
+                <Field label="DOI">
+                  <Input
+                    value={form.doi}
+                    onChange={e => setForm(f => ({ ...f, doi: e.target.value }))}
+                    placeholder="10.xxxx/xxxxx"
+                  />
+                </Field>
+
+                <Field label="URL">
+                  <Input
+                    value={form.url}
+                    onChange={e => setForm(f => ({ ...f, url: e.target.value }))}
+                    placeholder="https://..."
+                  />
+                </Field>
+
+                <Field label="Zotero Item URL">
+                  <Input
+                    value={form.zotero_item_url}
+                    onChange={e => setForm(f => ({ ...f, zotero_item_url: e.target.value }))}
+                    placeholder="https://www.zotero.org/..."
+                  />
+                </Field>
+
+                <Field label="Bucket Number (1–3)">
+                  <Input
+                    value={form.bucket_number}
+                    onChange={e => setForm(f => ({ ...f, bucket_number: e.target.value }))}
+                    placeholder="1, 2, or 3"
+                  />
+                </Field>
+
+                <Field label="Sub-bucket">
+                  <Input
+                    value={form.sub_bucket}
+                    onChange={e => setForm(f => ({ ...f, sub_bucket: e.target.value }))}
+                    placeholder="e.g., Identity Suppression"
+                  />
+                </Field>
+
+                <Field label="Mega/Macro/Micro">
+                  <Input
+                    value={form.mega_macro_micro}
+                    onChange={e => setForm(f => ({ ...f, mega_macro_micro: e.target.value }))}
+                    placeholder="Mega / Macro / Micro"
+                  />
+                </Field>
+
+                <Field label="Color Code">
+                  <Input
+                    value={form.color_code}
+                    onChange={e => setForm(f => ({ ...f, color_code: e.target.value }))}
+                    placeholder="Optional"
+                  />
+                </Field>
+
+                <div className="md:col-span-2">
+                  <Field label="APA Citation (optional but recommended)">
+                    <TextArea
+                      value={form.citation_apa}
+                      onChange={e => setForm(f => ({ ...f, citation_apa: e.target.value }))}
+                      rows={4}
+                      placeholder="Paste the APA citation here"
+                    />
+                  </Field>
+                </div>
+
+                <div className="md:col-span-2">
+                  <Field label="Full Annotation">
+                    <TextArea
+                      value={form.annotation_full}
+                      onChange={e => setForm(f => ({ ...f, annotation_full: e.target.value }))}
+                      rows={6}
+                      placeholder="Your annotation text"
+                    />
+                  </Field>
+                </div>
+
+                <div className="md:col-span-2">
+                  <Field label="Notes">
+                    <TextArea
+                      value={form.notes}
+                      onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+                      rows={4}
+                      placeholder="Extra notes"
+                    />
+                  </Field>
+                </div>
+              </div>
+
+              <div className="p-4 border-t border-slate-200 flex items-center justify-between gap-3">
+                <div className="text-xs text-slate-600">
+                  {modalMsg ? modalMsg : ' '}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setModalOpen(false)}
+                    className="px-3 py-2 rounded-lg text-sm border border-slate-200 hover:bg-slate-50"
+                    type="button"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={saveModal}
+                    disabled={modalSaving}
+                    className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm border ${
+                      modalSaving
+                        ? 'bg-slate-100 text-slate-400 border-slate-200'
+                        : 'bg-slate-900 text-white border-slate-900 hover:bg-slate-800'
+                    }`}
+                    type="button"
+                  >
+                    <FiSave /> {modalSaving ? 'Saving…' : 'Save'}
+                  </button>
                 </div>
               </div>
             </div>
