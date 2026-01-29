@@ -811,22 +811,18 @@ export default function Bibliography() {
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2 mb-2">
-                      {row.sub_bucket ? (
-                        <span className="text-[11px] px-2 py-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
-                          {row.sub_bucket}
-                        </span>
-                      ) : row.bucket_number ? (
-                        <span className="text-[11px] px-2 py-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
-                          Bucket {row.bucket_number}
-                        </span>
-                      ) : null}
+  {row.color_code ? (
+    <span className="text-[11px] px-2 py-1 rounded-full bg-slate-900 text-white border border-slate-900">
+      {row.color_code}
+    </span>
+  ) : null}
 
-                      {row.item_type ? (
-                        <span className="text-[11px] px-2 py-1 rounded-full bg-slate-50 text-slate-600 border border-slate-200">
-                          {row.item_type}
-                        </span>
-                      ) : null}
-                    </div>
+  {row.item_type ? (
+    <span className="text-[11px] px-2 py-1 rounded-full bg-slate-50 text-slate-600 border border-slate-200">
+      {row.item_type}
+    </span>
+  ) : null}
+</div>
 
                     <div className="font-semibold text-slate-900 text-lg leading-snug">{title}</div>
 
