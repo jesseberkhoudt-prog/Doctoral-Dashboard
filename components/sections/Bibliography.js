@@ -430,9 +430,6 @@ export default function Bibliography() {
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-8">
-      <div className="mb-3 text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
-        <span className="font-semibold">DEBUG:</span> loading={String(loading)} | err={err ? err : 'none'} | rows={items.length} | filtered={filtered.length} | missingTitles={missingTitleCount}
-      </div>
 
       <div className="text-center mb-6">
         <h1 className="text-3xl font-bold text-slate-900">Annotated Bibliography</h1>
