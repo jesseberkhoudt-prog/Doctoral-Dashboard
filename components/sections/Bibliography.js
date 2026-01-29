@@ -816,19 +816,6 @@ const border =
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2 mb-2">
-  {row.color_code ? (
-    <span className="text-[11px] px-2 py-1 rounded-full bg-slate-900 text-white border border-slate-900">
-      {row.color_code}
-    </span>
-  ) : null}
-
-  {row.item_type ? (
-    <span className="text-[11px] px-2 py-1 rounded-full bg-slate-50 text-slate-600 border border-slate-200">
-      {row.item_type}
-    </span>
-  ) : null}
-</div>
 
                     <div className="font-semibold text-slate-900 text-lg leading-snug">{title}</div>
 
