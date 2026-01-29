@@ -791,15 +791,21 @@ export default function Bibliography() {
             const authorText = authorsToString(row.authors);
             const snip = snippetFromText(row.annotation_full || row.notes);
 
-            const bucket = Number(row.bucket_number);
-            const border =
-              bucket === 1
-                ? 'border-l-blue-500'
-                : bucket === 2
-                ? 'border-l-emerald-500'
-                : bucket === 3
-                ? 'border-l-purple-500'
-                : 'border-l-slate-300';
+            const cc = (row.color_code || '').toLowerCase();
+const border =
+  cc.includes('blue')
+    ? 'border-l-blue-500'
+    : cc.includes('green') || cc.includes('emerald')
+    ? 'border-l-emerald-500'
+    : cc.includes('purple')
+    ? 'border-l-purple-500'
+    : cc.includes('red')
+    ? 'border-l-red-500'
+    : cc.includes('orange')
+    ? 'border-l-orange-500'
+    : cc.includes('yellow')
+    ? 'border-l-yellow-500'
+    : 'border-l-slate-300';
 
             return (
               <button
